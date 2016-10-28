@@ -1,1 +1,3 @@
-# baltimore_lifeexpectancy_final
+The final report can be viewed by downloading writeup.pdf. The supporting information for the report can be viewed by downloading supplementary.pdf. The full analysis can be replicated by running project_writeup.Rmd. All data, raw and processed, is available at https://www.dropbox.com/sh/k2voi1naimiuuvd/AABykWkPfAHrsVnxa3Py7_7ga?dl=0. 
+
+Before running the .Rmd file, it is recommended that the user create a directory called 'data' in the same working directory of the .Rmd file, and a subdirectory of 'data' called 'raw_data'. The user should then move the 'census_blocks.rds' and 'block_groups.rds' files from the dropbox to raw_data directory. This is so the user does not have to deal with the pain of waiting for these raw files to download. The analysis should be able to run in a timely fashion (< 5 minutes) after this step. 
