@@ -27,7 +27,7 @@ install.packages('scales')
 ```
 
 Now we load all the necessary packages
-```{r load_libraries, echo=FALSE, message=FALSE, warning=FALSE}
+```{r load_libraries, message=FALSE, warning=FALSE}
 library(jsonlite)
 library(tigris)
 library(rgdal)
@@ -142,13 +142,15 @@ saveRDS(work_stat, dest)
 
 Now we download the CSA shapefile. After downloading, we must unzip the folder, and then read it into R using the readOGR function.
 ```{r csa_shapefile}
-url <- 'http://bniajfi.org/wp-content/uploads/2014/04/csa_2010_boundaries.zip'
-download(url, dest=file.path('data', 'raw_data', 'shapes.zip'))
-unzip(file.path('data', 'raw_data', 'shapes.zip'),
-      exdir=file.path('data', 'raw_data'))
-csa_shapes <- readOGR(file.path("data", "raw_data"), "CSA_NSA_Tracts")
-dest <- file.path("data", "raw_data", "csa_shapes.rds")
-saveRDS(csa_shapes, dest)
+if(!file.exists(file.path('data', 'raw_data', 'shapes.zip'))){
+  url <- 'http://bniajfi.org/wp-content/uploads/2014/04/csa_2010_boundaries.zip'
+  download(url, dest=file.path('data', 'raw_data', 'shapes.zip'))
+  unzip(file.path('data', 'raw_data', 'shapes.zip'),
+        exdir=file.path('data', 'raw_data'))
+  csa_shapes <- readOGR(file.path("data", "raw_data"), "CSA_NSA_Tracts")
+  dest <- file.path("data", "raw_data", "csa_shapes.rds")
+  saveRDS(csa_shapes, dest)
+}
 ```
 
 And finally we read in the shape files for blocks and block groups. Note that this is NOT evaluated--it is assumed that these are already in the raw_data directory for the rest of the analysis.
@@ -160,14 +162,18 @@ And finally we read in the shape files for blocks and block groups. Note that th
 
 ### Code can take a while to run
 options(tigris_use_cache = FALSE)
-block_defs <- blocks(state = 24, county = 510)
 dest <- file.path("data", "raw_data", "census_blocks.rds")
-saveRDS(block_defs, dest)
+if(!file.exists(dest)){
+  block_defs <- blocks(state = 24, county = 510)
+  saveRDS(block_defs, dest)
+}
 
 ### block groups
-block.groups <- block_groups(state="MD", county=510)
 dest <- file.path("data", "raw_data", "block_groups.rds")
-saveRDS(block.groups, dest)
+if(!file.exists(dest)){
+  block.groups <- block_groups(state="MD", county=510)
+  saveRDS(block.groups, dest)
+}
 ```
 
 ### Data Processing
