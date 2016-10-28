@@ -1,0 +1,688 @@
+---
+title: "Baltimore Life Expectancy"
+author: "Jacob Fiksel"
+date: "September 12, 2016"
+output: pdf_document
+---
+### Loading libraries and downloading data
+This analysis relies on many packages, some of which the user may not have installed. If you come across any package that you do not yet have installed, just run the line for installing that package below.
+```{r install_packages, eval=FALSE}
+install.packages('jsonlite')
+install.packages('lubridate')
+install.packages('tigris')
+install.packages('rgdal')
+install.packages('downloader')
+install.packages('acs')
+install.packages('plyr')
+install.packages('dplyr')
+install.packages('KernSmooth')
+install.packages('rgeos')
+install.packages('fields')
+install.packages('sp')
+install.packages('leaflet')
+install.packages('maptools')
+install.packages('ggplot2')
+install.packages('ggmap')
+install.packages('scales')
+```
+
+Now we load all the necessary packages
+```{r load_libraries, echo=FALSE, message=FALSE, warning=FALSE}
+library(jsonlite)
+library(tigris)
+library(rgdal)
+library(downloader)
+library(acs)
+library(plyr)
+library(dplyr)
+library(KernSmooth)
+library(rgeos)
+library(fields)
+library(sp)
+library(leaflet)
+library(maptools)
+library(ggplot2)
+library(ggmap)
+library(scales)
+library(lubridate)
+```
+
+Now let's download our data from the OpenBaltimore API. We first create a data directory, and a subdirectory to place our raw data. We assume all data is downloaded at the same time, so we only record the date downloaded once.
+```{r download_data_openbmore}
+if(!dir.exists("data")){
+  dir.create("data")
+}
+if(!dir.exists(file.path("data", "raw_data"))){
+  dir.create(file.path("data", "raw_data"))
+}
+
+date_downloaded <- now()
+
+### Dataset containing life expectancies for each CSA
+well_being <- fromJSON("https://data.baltimorecity.gov/resource/ivtw-hiv6.json")
+dest <- file.path("data", "raw_data", "well_being.rds")
+saveRDS(well_being, dest)
+
+### Locations of all vacant buildings
+vacant_buildings <- fromJSON("https://data.baltimorecity.gov/resource/rw5h-nvv4.json")
+dest <- file.path("data", "raw_data", "vacant_buildings.rds")
+saveRDS(vacant_buildings, dest)
+
+### Victim crime containing locations of shootings and burglaries
+victim_crime <- fromJSON("https://data.baltimorecity.gov/resource/4ih5-d5d5.json")
+dest <- file.path("data", "raw_data", "victim_crime.rds")
+saveRDS(victim_crime, dest)
+
+### Locations of liquor stores
+liquor_stores <- fromJSON("https://data.baltimorecity.gov/resource/hew9-k3x4.json")
+dest <- file.path("data", "raw_data", "liquor_stores.rds")
+saveRDS(liquor_stores, dest)
+
+### Restaurants, containing locations of fast food restaurants
+restaurants <- fromJSON("https://data.baltimorecity.gov/resource/abuv-d2r2.json")
+dest <- file.path('data', 'raw_data', 'restaurants.rds')
+saveRDS(restaurants, dest)
+```
+
+Now we will use the acs package to read in Census data from 2010-2014. 
+```{r read_acs}
+### ACS data
+### Average household income
+acs_api <- "9de0607b39f202d656f833c9ed107b4d7e62ac0d"
+api.key.install(acs_api)
+### hhincome
+income_data <- acs.fetch(endyear=2014,
+                         geography=geo.make(state="MD",
+                                            county=510,
+                                            tract="*",
+                                            block.group="*"),
+                         table.number="B19013")
+dest <- file.path("data", "raw_data", "acs_income.rds")
+saveRDS(income_data, dest)
+### education
+education_data <- acs.fetch(endyear=2014,
+                         geography=geo.make(state="MD",
+                                            county=510,
+                                            tract="*",
+                                            block.group="*"),
+                         table.number="B15002")
+dest <- file.path("data", "raw_data", "acs_education.rds")
+saveRDS(education_data, dest)
+
+### segregation
+race <- acs.fetch(endyear=2014,
+                            geography=geo.make(state="MD",
+                                               county=510,
+                                               tract="*",
+                                               block.group="*"),
+                            table.number="B02001")
+dest <- file.path("data", "raw_data", "acs_race.rds")
+saveRDS(race, dest)
+
+### to get total population
+sexbyage <- acs.fetch(endyear=2014,
+                  geography=geo.make(state="MD",
+                                     county=510,
+                                     tract="*",
+                                     block.group="*"),
+                  table.number="B01001")
+dest <- file.path("data", "raw_data", "acs_sexbyage.rds")
+saveRDS(sexbyage, dest)
+
+### employment
+work_stat <-  acs.fetch(endyear=2014,
+                        geography=geo.make(state="MD",
+                                           county=510,
+                                           tract="*",
+                                           block.group="*"),
+                        table.number="B23027")
+dest <- file.path("data", "raw_data", "acs_workstat.rds")
+saveRDS(work_stat, dest)
+```
+
+Now we download the CSA shapefile. After downloading, we must unzip the folder, and then read it into R using the readOGR function.
+```{r csa_shapefile}
+url <- 'http://bniajfi.org/wp-content/uploads/2014/04/csa_2010_boundaries.zip'
+download(url, dest=file.path('data', 'raw_data', 'shapes.zip'))
+unzip(file.path('data', 'raw_data', 'shapes.zip'),
+      exdir=file.path('data', 'raw_data'))
+csa_shapes <- readOGR(file.path("data", "raw_data"), "CSA_NSA_Tracts")
+dest <- file.path("data", "raw_data", "csa_shapes.rds")
+saveRDS(csa_shapes, dest)
+```
+
+And finally we read in the shape files for blocks and block groups. Note that this is NOT evaluated--it is assumed that these are already in the raw_data directory for the rest of the analysis.
+```{r blocks_and_blockgroups_shapefile, eval=FALSE}
+
+### Baltimore 
+### lookup_code("Maryland", "Baltimore City")
+###  "The code for Maryland is '24' and the code for Baltimore city is '510'."
+
+### Code can take a while to run
+options(tigris_use_cache = FALSE)
+block_defs <- blocks(state = 24, county = 510)
+dest <- file.path("data", "raw_data", "census_blocks.rds")
+saveRDS(block_defs, dest)
+
+### block groups
+block.groups <- block_groups(state="MD", county=510)
+dest <- file.path("data", "raw_data", "block_groups.rds")
+saveRDS(block.groups, dest)
+```
+
+### Data Processing
+The bulk of this analysis is the processing, aggregating, and transforming of all the necessary variables. Let's get to work! First, let's clean all of our collected data sets so that they are in usable format for the later steps of the analysis.
+```{r clean_data}
+### Point to raw_data directory for all data
+files_dir <- file.path("data", "raw_data")
+### Make directory to put processed data
+processed_path <- file.path("data", "processed_data")
+if(!dir.exists(processed_path)){
+  dir.create(processed_path)
+}
+
+
+### Vacant buildings--just need to extract coordinates
+vacant_buildings <- readRDS(file.path(files_dir, "vacant_buildings.rds"))
+coords <- vacant_buildings$location$coordinates
+vacant_coords <- data.frame(longitude=unlist(sapply(coords, function(coord) coord[1])),
+                            latitude=unlist(sapply(coords, function(coord) coord[2])))
+saveRDS(vacant_coords, file.path(processed_path, "vacant_coords.rds"))
+
+### Shootings and burglaries 2014, 2015 from victim based crime
+#### Victim based crimes
+victim_crime <- readRDS(file.path(files_dir, "victim_crime.rds"))
+coordinates <- victim_crime$location_1$coordinates
+victim_crime$location_1 <- NULL
+isnull <- sapply(coordinates, function(x) is.null(x))
+victim_crime <- victim_crime[!isnull,]
+victim_crime$longitude <- unlist(sapply(coordinates, function(x) x[1]))
+victim_crime$latitude <- unlist(sapply(coordinates, function(x) x[2]))
+victim_crime <- victim_crime[,-c(1,2,4,10:12)]
+victim_crime$longitude <- as.numeric(victim_crime$longitude)
+victim_crime$latitude <- as.numeric(victim_crime$latitude)
+year <- as.integer(substr(victim_crime$crimedate,1,4))
+victim_crime$crimedate <- NULL
+victim_crime$year <- year
+victim_crime$description <- tolower(victim_crime$description)
+shooting_coords <- victim_crime %>% 
+  filter((year==2015|year==2014) & description=="shooting") %>%
+  select(longitude, latitude, year)
+burglary_coords <- victim_crime %>% 
+  filter((year==2015|year==2014) & description=="burglary") %>%
+  select(longitude, latitude, year)
+saveRDS(shooting_coords, file.path(processed_path, "shooting_coords.rds"))
+saveRDS(burglary_coords, file.path(processed_path, "burglary_coords.rds"))
+
+### Restaurants
+### This uses the google_api to extract latitude and longitude
+### Must be connected to the internet
+restaurants <- readRDS(file.path(files_dir, "restaurants.rds"))
+name <- tolower(restaurants$name)
+name <- gsub(" |'", "", name)
+name[grepl("mcdonalds", name)] <- "mcdonalds"
+name[grepl("burgerking", name)] <- "burgerking"
+name[grepl("kentucky|kfc", name)] <- "kfc"
+name[grepl("tacobell", name)] <- "tacobell"
+name[grepl("popeyesfamous", name)] <- "popeyes"
+name[grepl("wendys", name)] <- "wendys"
+restaurants$name <- name
+fastfood <- restaurants %>% filter(name=="mcdonalds"|
+                                     name=="burgerking"|
+                                     name=="kfc"|
+                                     name=="tacobell"|
+                                     name=="popeyes"|
+                                     name=="wendys")
+### Get fast food coords
+colnames(fastfood)[2:4]<- c('city', 'address', 'state')
+google_api <- "AIzaSyDzHDDwR_AjIzMkk5OT472e2yLtqNgZz0E"
+full_address <- paste(fastfood$address, fastfood$city, fastfood$state, sep=" ")
+latitude <- sapply(full_address, function(place){
+  place <- gsub(" ", "+", place)
+  url <- paste0("https://maps.googleapis.com/maps/api/geocode/json?address=", place, "&key=", google_api)
+  geoloc <- fromJSON(url)
+  geoloc$results$geometry$location[1][1,1]
+})
+
+longitude <-  sapply(full_address, function(place){
+  place <- gsub(" ", "+", place)
+  url <- paste0("https://maps.googleapis.com/maps/api/geocode/json?address=", place, "&key=", google_api)
+  geoloc <- fromJSON(url)
+  geoloc$results$geometry$location[2][1,1]
+})
+fastfood_coords <- data.frame(longitude=unname(longitude),
+                              latitude=unname(latitude))
+saveRDS(fastfood_coords, file.path(processed_path, "fastfoods.rds"))
+
+### Liquor stores
+liquor_stores <- readRDS(file.path(files_dir, "liquor_stores.rds"))
+liquor_stores <- subset(liquor_stores, licensestatus=="Renewed")
+liquor_stores <- data.frame(longitude=liquor_stores$location_1$longitude,
+                            latitude=liquor_stores$location_1$latitude)
+liquor_coords <- subset(liquor_stores, !duplicated(liquor_stores))
+liquor_coords <- as.data.frame(liquor_coords)
+liquor_coords <- sapply(liquor_coords, function(col) as.numeric(as.character(col)))
+liquor_coords <- as.data.frame(liquor_coords)
+saveRDS(liquor_coords, file.path(processed_path, "liquor_stores.rds"))
+
+### Household income
+income_data <- readRDS(file.path(files_dir, "acs_income.rds"))                           
+
+income_df <- data.frame(GEOID=paste0(as.character(income_data@geography$state), 
+                                    as.character(income_data@geography$county),
+                                    income_data@geography$tract,
+                                    income_data@geography$blockgroup), 
+                        hhincome=income_data@estimate[,1])
+saveRDS(income_df, file.path(processed_path, "acs_income.rds"))
+
+### Race by block group
+race <- readRDS(file.path(files_dir, "acs_race.rds"))
+race_df <- data.frame(GEOID=paste0(as.character(race@geography$state), 
+                                  as.character(race@geography$county),
+                                  race@geography$tract,
+                                  race@geography$blockgroup),
+                      pctwhite=race@estimate[,2]/race@estimate[,1],
+                      pctblack=race@estimate[,3]/race@estimate[,1])
+saveRDS(race_df, file.path(processed_path, "acs_race.rds"))
+
+### use sex by block group to get totalpopulation
+sex <- readRDS(file.path(files_dir, "acs_sexbyage.rds"))
+sex_df <- data.frame(GEOID=paste0(as.character(sex@geography$state), 
+                          as.character(sex@geography$county),
+                          sex@geography$tract,
+                          sex@geography$blockgroup),
+                     totalpop=sex@estimate[,1])
+saveRDS(sex_df, file.path(processed_path, "acs_sex.rds"))
+
+### Employment status by work group
+work_stat <- readRDS(file.path(files_dir, "acs_workstat.rds"))
+total <- work_stat@estimate[,7] + work_stat@estimate[,12] + 
+  work_stat@estimate[,17] + work_stat@estimate[,22]
+worked <- work_stat@estimate[,8] + work_stat@estimate[,13] + 
+  work_stat@estimate[,18] + work_stat@estimate[,23]
+work_df <- data.frame(GEOID=paste0(as.character(work_stat@geography$state), 
+                                         as.character(work_stat@geography$county),
+                                   work_stat@geography$tract,
+                                   work_stat@geography$blockgroup),
+                      pct.work=worked/total)
+saveRDS(work_df, file.path(processed_path, "acs_workstat.rds"))
+                      
+### Education by block group
+education_data <- readRDS(file.path(files_dir, "acs_education.rds"))
+point.estimates <- education_data@estimate
+total <- point.estimates[,1]
+less.highschool <- rowSums(point.estimates[,c(3:10, 20:27)])
+highschool <- rowSums(point.estimates[,c(11,28)])
+somecollege <- rowSums(point.estimates[,c(12,13,29:30)])
+college <- rowSums(point.estimates[,c(14,15,31,32)])
+graduate <- rowSums(point.estimates[,c(16:18, 33:35)])
+education_df <- data.frame(GEOID=paste0(as.character(income_data@geography$state), 
+                                       as.character(income_data@geography$county),
+                                       income_data@geography$tract,
+                                       income_data@geography$blockgroup),
+                           pct.lesshighschool=less.highschool/total,
+                           pct.highschool=highschool/total,
+                           pct.somecollege=somecollege/total,
+                           pct.college=college/total,
+                           pct.graduate=graduate/total)
+saveRDS(education_df, file.path(processed_path, "acs_education.rds"))
+```
+
+
+Great! Now let's start cleaning up our shape files
+```{r clean_shape_files}
+### CSA shapes
+csa <- readRDS(list.files(path=file.path("data", "raw_data"),
+                          pattern="csa_shapes.rds", full.names=TRUE))
+### Remove jail
+csa <- csa[-51,]
+csa@data <- droplevels(csa@data)
+neighborhood <- csa@data$Neigh 
+### CSA coordinates to latitude and longitude
+llprj <-  "+proj=longlat +ellps=WGS84 +datum=WGS84 +no_defs +towgs84=0,0,0"
+csa <- spTransform(csa,  llprj)
+saveRDS(csa, file.path(processed_path, "csa_shapes.rds"))
+
+### Block shapes
+blocks <- readRDS(list.files(path=file.path("data", "raw_data"),
+                             pattern="census_blocks.rds", full.names=TRUE))
+llprj <-  "+proj=longlat +ellps=WGS84 +datum=WGS84 +no_defs +towgs84=0,0,0"
+blocks <- spTransform(blocks,  llprj)
+### Block group shapefile
+block.groups <- readRDS(file.path(files_dir, "block_groups.rds"))
+k <- which(substr(block.groups@data$TRACTCE, 1, 1)=="0")
+block.groups@data[k,]$GEOID <- paste0(substr(block.groups@data[k,]$GEOID, 1, 4), substr(block.groups@data[k,]$GEOID, 6, 12))
+block.groups@data$GEOID <- factor(block.groups@data$GEOID)
+### Make latitude and longitude projections common between 
+llprj <-  "+proj=longlat +ellps=WGS84 +datum=WGS84 +no_defs +towgs84=0,0,0"
+block.groups <- spTransform(block.groups, llprj)
+```
+
+Now let's merge all of our block group data, and assign them to the blocks within those block groups.
+```{r}
+blockgroup_data <- join_all(list(income_df, race_df, sex_df, education_df, work_df))
+blockgroup_merged <- geo_join(block.groups, blockgroup_data, "GEOID", "GEOID")
+
+### Check for missing data
+blockgroup_datamissing <- is.na(blockgroup_merged@data[])
+notmissing <- rowSums(blockgroup_datamissing)==0
+blockgroup_merged <- blockgroup_merged[notmissing,]
+
+### Assign block group data to blocks
+#### Merge by GEOID
+k1 <- which(substr(blocks@data$TRACTCE10, 1, 1)=="0")
+blocks@data[k1,]$GEOID10 <- paste0(substr(blocks@data[k1,]$GEOID10, 1, 4), substr(blocks@data[k1,]$GEOID10, 6, 12))
+k2 <- which(substr(blocks@data$TRACTCE10, 1, 1)!="0")
+blocks@data[k2,]$GEOID10 <- substr(blocks@data[k2,]$GEOID10, 1, nchar(blocks@data[k2,]$GEOID10)-3)
+blocks@data$GEOID10 <- factor(blocks@data$GEOID10)
+match.blockgroup <- match(blocks@data$GEOID10, blockgroup_merged@data$GEOID)
+blocks@data <- cbind(blocks@data,blockgroup_merged@data[match.blockgroup,14:ncol(blockgroup_merged@data),])
+which.keep <- rowSums(is.na(blocks@data[,16:ncol(blocks@data)]))==0
+blocks <- blocks[which.keep,]
+```
+
+Before moving on, let's make sure each block is in a CSA, and remove all of those for which we can't determine the CSA. 
+```{r assign_csa}
+### CSA for each block
+blockcenters <- gCentroid(blocks, byid=TRUE)
+which.csacenters <- over(blockcenters, csa)
+which.csanorm <- over(blocks,csa)
+which.na <- is.na(which.csacenters$Community)
+which.csacenters[which.na,] <- which.csanorm[which.na,]
+blocks@data$csa <- which.csacenters$Community
+blocks <- blocks[!is.na(blocks@data$csa),]
+```
+
+Now let's use kernel smoothing to get 2D density estimates for each block for all of our location variables. 
+```{r}
+### First get borders of latitude and longitude for blockss
+min.longitude <- min(sapply(1:length(blocks), function(i) min(blocks@polygons[i][[1]]@Polygons[[1]]@coords[,1])))
+max.longitude <- max(sapply(1:length(blocks), function(i) max(blocks@polygons[i][[1]]@Polygons[[1]]@coords[,1])))
+min.latitude <- min(sapply(1:length(blocks), function(i) min(blocks@polygons[i][[1]]@Polygons[[1]]@coords[,2])))
+max.latitude <- max(sapply(1:length(blocks), function(i) max(blocks@polygons[i][[1]]@Polygons[[1]]@coords[,2])))
+
+
+### KernSmooth point data
+### get block centers again
+blockcenters <- gCentroid(blocks, byid=TRUE)
+### Vaccant buildies 
+vacant_dens <- bkde2D(as.matrix(vacant_coords), bandwidth=c(.004, .004), 
+                        range.x=list(c(min.longitude, max.longitude), 
+                                     c(min.latitude, max.latitude)))
+obj <- list(x=vacant_dens$x1, y=vacant_dens$x2, z=vacant_dens$fhat)
+vacant_pred <- interp.surface(obj, blockcenters@coords)
+blocks@data$vacant_density <- vacant_pred
+
+### Shootings
+shooting_dens <- bkde2D(as.matrix(shooting_coords), bandwidth=c(.004, .004), 
+               range.x=list(c(min.longitude, max.longitude), 
+                            c(min.latitude, max.latitude)))
+obj <- list(x=shooting_dens$x1, y=shooting_dens$x2, z=shooting_dens$fhat)
+shooting_pred <- interp.surface(obj, blockcenters@coords)
+blocks@data$shooting_density <- shooting_pred
+
+### Burglaries 
+burglary_dens <- bkde2D(as.matrix(burglary_coords), bandwidth=c(.004, .004), 
+                        range.x=list(c(min.longitude, max.longitude), 
+                                     c(min.latitude, max.latitude)))
+obj <- list(x=burglary_dens$x1, y=burglary_dens$x2, z=burglary_dens$fhat)
+burglary_pred <- interp.surface(obj, blockcenters@coords)
+blocks@data$burglary_density <- burglary_pred
+
+### Fast food
+fastfood_dens <- bkde2D(as.matrix(fastfood_coords), bandwidth=c(.004, .004), 
+                        range.x=list(c(min.longitude, max.longitude), 
+                                     c(min.latitude, max.latitude)))
+obj <- list(x=fastfood_dens$x1, y=fastfood_dens$x2, z=fastfood_dens$fhat)
+fastfood_pred <- interp.surface(obj, blockcenters@coords)
+blocks@data$fastfood_density <- fastfood_pred
+
+### Liquor stores
+liquor_dens <- bkde2D(as.matrix(liquor_coords), bandwidth=c(.004, .004), 
+                        range.x=list(c(min.longitude, max.longitude), 
+                                     c(min.latitude, max.latitude)))
+obj <- list(x=liquor_dens$x1, y=liquor_dens$x2, z=liquor_dens$fhat)
+liquor_pred <- interp.surface(obj, blockcenters@coords)
+blocks@data$liquor_density <- liquor_pred
+test.na <- is.na(blocks@data[,16:ncol(blocks@data)])
+keep <- rowSums(test.na)==0
+blocks <- blocks[keep,]
+```
+
+We now aggregate from block measurements to CSA level measurements using our two-step weighted average procedure.
+```{r}
+### First assign to block groups, then do weighted average to CSA
+blockgroup.summarize <- blocks@data %>% group_by(GEOID10) %>%
+  summarize(vacant_density=mean(vacant_density),
+            shooting_density=mean(shooting_density),
+            burglary_density=mean(burglary_density),
+            fastfood_density=mean(fastfood_density),
+            liquor_density=mean(liquor_density))
+key <- match(blockgroup_merged@data$GEOID, blockgroup.summarize$GEOID10)
+blockgroup_merged@data <- cbind(blockgroup_merged@data,blockgroup.summarize[key, 2:6])
+
+### First assign block group to CSA based on center of block
+blockgroup_centers <- gCentroid(blockgroup_merged, byid=TRUE)
+which.csa_centers<- over(blockgroup_centers, csa)
+blockgroup_merged@data$csa <- which.csa_centers$Community
+
+csa.summarize <- blockgroup_merged@data %>% group_by(csa) %>%
+  mutate(weight=totalpop/sum(totalpop)) %>%
+  summarize(hhincome=weighted.mean(hhincome, weight),
+            pctblack=weighted.mean(pctblack, weight),
+            pct.work=weighted.mean(pct.work, weight),
+            pct.lesshighschool=weighted.mean(pct.lesshighschool, weight),
+            vacant_density=weighted.mean(vacant_density, weight),
+            shooting_density=weighted.mean(shooting_density, weight),
+            burglary_density=weighted.mean(burglary_density, weight),
+            fastfood_density=weighted.mean(fastfood_density, weight),
+            liquor_density=weighted.mean(liquor_density, weight))
+
+order.csa <- order(csa.summarize$csa)
+names(order.csa) <- csa.summarize$csa
+csa.summarize <- csa.summarize[order.csa[csa@data$Community],]
+csa@data <- cbind(csa@data, csa.summarize[,2:ncol(csa.summarize)])
+csa@data <- csa@data[,-c(2,3)]
+colnames(csa@data)[1] <- "community"  
+
+### No longer need block group data, so let's save it
+saveRDS(blockgroup_merged, file.path(processed_path, "blockgroup_final.rds"))
+```
+
+Now that we've aggregated to the CSA level, let's transform our block level data with the log and logit transformations.
+```{r}
+blocks@data <- select(blocks@data, GEOID10, hhincome, pctblack, pct.lesshighschool,
+                 pct.work, vacant_density, shooting_density, burglary_density, 
+                 fastfood_density, liquor_density, csa)
+
+### Transform block level data
+blocks@data$hhincome <- log(blocks@data$hhincome + .01)
+blocks@data[,3:5] <- sapply(blocks@data[,3:5], function(x){
+  x <- ifelse(x==1, .999, x)
+  x <- ifelse(x==0, .001, x)
+  log(x/(1-x))
+})
+
+blocks@data[,6:10] <- sapply(blocks@data[,6:10], function(x) log(x+.01))
+saveRDS(blocks, file.path(processed_path, "block_final.rds"))
+```
+
+Finally, we need life expectancy measurements for each CSA! We will use the 2014 estimate. We end by transforming the necessary variables at the CSA level.
+```{r}
+well_being <- readRDS(file.path(files_dir, "well_being.rds"))
+colnames(well_being)[6] <- "csa"
+
+### Life expectancy to CSA
+well_being <- well_being[,grep("14$|csa", colnames(well_being))]
+key <- na.omit(match(csa@data$community, well_being$csa))
+csa@data$life_expectancy <- as.numeric(well_being$lifeexp14[key])
+
+### Transform CSA level variables
+
+csa@data[,c(2, 6:10)] <- sapply(csa@data[,c(2, 6:10)], function(x) log(x+.01))
+csa@data[,3:5] <- sapply(csa@data[,3:5], function(x){
+  x <- ifelse(x==1, .999, x)
+  x <- ifelse(x==0, .001, x)
+  log(x/(1-x))
+})
+saveRDS(csa, file.path(processed_path, "final_csa.rds"))
+```
+
+Now let's produce some pretty pictures. We read in the files again, just to ensure we are working with the proper files. These are the median household incomes at the block group level in Patterson Park, and the shooting coordinates to kernel density estimates figures.
+
+```{r figures}
+if(!dir.exists("figures")){
+  dir.create("figures")
+}
+csa <- readRDS(list.files(path=file.path("data", "processed_data"),
+                          pattern="final_csa.rds", full.names=TRUE))
+shooting_coords <- readRDS(list.files(path=file.path("data", "processed_data"),
+                                      pattern="shooting_coords.rds", full.names=TRUE))
+blocks <- readRDS(list.files(path=file.path("data", "processed_data"),
+                             pattern="block_final.rds", full.names=TRUE))
+block_groups <- readRDS(list.files(path=file.path("data", "processed_data"),
+                                   pattern="blockgroup_final.rds", full.names=TRUE))
+
+### Figure 1: Patterson Park Block Group Household Income
+
+### Get CSA data frame for plotting
+csa.points <- fortify(csa, region="community")
+colnames(csa.points)[6] <- "community"
+csa.df <- join(csa.points, csa@data, by="community")
+
+### Get Block Groups data frame for plotting
+is.patterson <- which(block_groups@data$csa=='Patterson Park North & East')
+blockgroups.points <- fortify(block_groups[is.patterson,], region="GEOID")
+colnames(blockgroups.points)[6] <- "GEOID"
+blockgroups.df <- join(blockgroups.points, block_groups[is.patterson,]@data, by = "GEOID")
+### Center of Patterson Park
+
+patterson.center <- gCentroid(csa, byid=TRUE)[which(csa@data$community=='Patterson Park North & East')]
+pattersonparkmap <- get_map(location=c(lon=patterson.center$x, lat=patterson.center$y), zoom=15)
+ggmap(pattersonparkmap) +
+  geom_path(data=blockgroups.df, aes(x=long, y=lat, group=GEOID), color="black")+
+  geom_polygon(data=blockgroups.df, aes(x=long, y=lat, group=GEOID, fill=hhincome), alpha=.8)+
+  scale_fill_gradientn("Median Household Income", colors=c('red', 'yellow', 'darkgreen'), labels=comma) +
+  ylab("Latitude") + xlab("Longitude") +
+  theme(axis.text = element_text(size = 18),
+          axis.title = element_text(size = 20),
+          legend.text = element_text(size = 15),
+          legend.title = element_text(size = 15))
+dest <- file.path("figures", "pattersonpark.png")
+ggsave(dest, width=12, height=8 )
+
+### Shooting locations and densities
+baltimoremap <- get_map(location="Baltimore", zoom=12)
+
+centers <- gCentroid(blocks, byid=TRUE)
+centers <- as.data.frame(centers)
+centers$shooting <- blocks@data$shooting_density
+ggmap(baltimoremap)+ 
+  geom_point(data=centers, aes(x=x, y=y, color=shooting)) + 
+  geom_point(data=shooting_coords, aes(x=longitude, y=latitude)) +
+  scale_color_gradientn("Log Shooting Density Estimate", colors=c('darkgreen', 'lightgreen', 'yellow', 'red')) +
+  ylab("Latitude") + xlab("Longitude") +
+  theme(axis.text = element_text(size = 18),
+          axis.title = element_text(size = 20),
+          legend.text = element_text(size = 15),
+          legend.title = element_text(size = 15))
+dest <- file.path("figures", "shootingdensity.png")
+ggsave(dest, width=10, height=8)
+```
+
+I made some claims about my data--let's back that up!
+```{r back_claims}
+### Check that household income differs by over $85,000 in Patterson Park
+block_groups@data %>% filter(csa=='Patterson Park North & East') %>%
+  summarise(diff.income = max(hhincome) - min(hhincome))
+
+### check that around 93% of Baltimore citizens either black or white
+block_groups@data %>%
+  summarise(pctblackwhite = sum(pctwhite*totalpop + pctblack*totalpop)/sum(totalpop))
+```
+
+Let's get modeling!
+```{r linear_model}
+### Get rid of factor name of CSA
+dat <- csa@data[,-1]
+### Build model with all CSAs
+model <- lm(life_expectancy~., data=dat)
+### Diagnostics figure
+png(file.path('figures', 'leverage.png'))
+plot(model, which=5, sub.caption=NA, labels.id=as.character(csa@data[,1]))
+dev.off()
+
+### Coefficients
+summary(model)$coefficients
+
+### Correlation between predictors
+cor(dat[,-(ncol(dat))])
+### Plot relationship between education and life expectancy
+x <- dat$pct.lesshighschool
+y <- dat$life_expectancy
+png(file.path('figures', 'educationcor.png'))
+plot(x,y ,
+     main="",axes=FALSE, pch=16, cex=0.8, family="serif",
+     xlab="Logit of % of Residents Over 25 Without a High School Degree or Equivalent (Aggregate)",
+     ylab="Life Expectancy")
+axis(1,at=summary(x),labels=round(summary(x),1), tick=F, family="serif")
+axis(2,at=summary(y),labels=round(summary(y),1), tick=F, las=2, family="serif")
+dev.off()
+
+### Cross validation procedure
+dev <- c()
+### Median deviation
+for(i in 1:nrow(csa@data)){
+  csa.cv <- csa@data[i,]$community
+  csa.actual <- dat[i,]$life_expectancy
+  model.cv <- lm(life_expectancy~., data=dat[-i,])
+  blocks.csa <- blocks@data %>% filter(csa==csa.cv)
+  blocks.csa$prediction <- predict(model, blocks.csa)
+  blockgroup.pred <- blocks.csa %>% group_by(GEOID10) %>%
+    summarise(mean.pred=mean(prediction))
+  blockgroup.csa <- block_groups@data %>% filter(csa == csa.cv)
+  key <- match(blockgroup.csa$GEOID, blockgroup.pred$GEOID10)
+  blockgroup.csa$predict <- blockgroup.pred[key, ]$mean.pred
+  ### Weighted average to CSA
+  weight <- blockgroup.csa$totalpop/sum(blockgroup.csa$totalpop)
+  weight.mean <- weighted.mean(blockgroup.csa$predict, weight=weight)
+  dev <- c(dev, abs(weight.mean-csa.actual))
+}
+
+### Average absolute difference
+mean(dev)
+
+### which csa has biggest difference between predicted and actual
+csa@data$community[order(dev, decreasing=TRUE)[1:5]]
+### Downtown/Seton Hill is #2. What's the difference?
+sort(dev, decreasing=T)[2]
+
+### Predictions using full model
+### Predict at block level
+datblocks <- blocks@data
+blocks@data$prediction <- predict(model, datblocks)
+
+#### Greatest difference of predicting block expectancy within a CSA
+blocks@data %>% group_by(csa) %>%
+  summarise(max.diff = max(prediction) - min(prediction)) %>%
+  arrange(desc(max.diff))
+
+### Visualization of predictions
+block.points <- fortify(blocks, data=blocks@data)
+blocks@data$id <- rownames(blocks@data)
+blocks.df <- join(block.points, blocks@data, by="id")
+
+ggmap(baltimoremap)+
+  geom_path(data=csa.df, aes(x=long, y=lat, group=group), color="black") +
+  geom_polygon(data=blocks.df, aes(x=long, y=lat, group=group, fill=prediction), alpha=.75) +
+  scale_fill_gradientn("Life Expectancy", colors=c('red', 'yellow', 'green'), lim=c(64, 95)) +
+  ylab("Latitude") + xlab("Longitude") +
+  theme(axis.text = element_text(size = 18),
+        axis.title = element_text(size = 20),
+        legend.text = element_text(size = 15),
+        legend.title = element_text(size = 15))
+ggsave(file.path('figures', 'predictions.png'), width=10, height=8)
+
+```
+
+
